@@ -1,0 +1,8 @@
+#!/bin/sh
+plugin_dir="/data/ubuntu/root/plugins/streamingserver"
+for adir in xhamster xnxx xvideos; do
+	if [ -d $plugin_dir/providers/$adir ]; then
+		rm -rf $plugin_dir/providers/$adir
+	fi
+done
+exit 0

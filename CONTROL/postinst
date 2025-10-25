@@ -1,0 +1,23 @@
+#!/bin/sh
+CHROOT_DIR=/data/ubuntu
+ENIGMA2_DIR=/usr/lib/enigma2/python/Plugins/SystemPlugins/Area-51
+UBUNTU_DIR=$CHROOT_DIR/root/plugins/streamingserver
+mkdir -p $UBUNTU_DIR
+cp $ENIGMA2_DIR/src/area51_requirements.txt $UBUNTU_DIR/.
+cp -avr $ENIGMA2_DIR/src/providers/* $UBUNTU_DIR/providers/
+
+$CHROOT_DIR/root/mount_chroot
+chroot "$CHROOT_DIR" /bin/bash -c "
+    echo '[*] Updating plugin packages...'
+    /root/venv/bin/pip install -r /root/plugins/streamingserver/area51_requirements.txt
+"
+$CHROOT_DIR/root/umount_chroot
+echo "***********************************"
+echo "*             Area-51             *"
+echo "*               by                *"
+echo "*          dream-alpha            *"
+echo "***********************************"
+echo ""
+echo "Plugin successfully installed."
+echo "Please restart DreamOS now!"
+exit 0
