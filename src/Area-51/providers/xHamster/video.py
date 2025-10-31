@@ -14,8 +14,9 @@ from __future__ import annotations
 import re
 import html as html_parser
 from typing import Any
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import urljoin
 from debug import get_logger
+from string_utils import clean_text, sanitize_for_json
 from constants import PAGE_ENTRIES, MAX_VIDEOS
 
 logger = get_logger(__file__)
@@ -96,139 +97,7 @@ class Video:
             logger.info("Error getting xHamster videos: %s", e)
             return []
 
-    def get_latest_videos(self, page: int = 1, limit: int = PAGE_ENTRIES) -> list[dict[str, Any]]:
-        """Get latest videos from xHamster main page - optimized for performance"""
-        url = f"{self.provider.base_url}newest/{page}"
-        return self._get_videos_from_url(url, page, "Latest", limit)
-
-    def search_videos(self, term: str, page: int = 1, limit: int = PAGE_ENTRIES) -> list[dict[str, Any]]:
-        """Search for videos on xHamster - optimized for performance"""
-        url = f"{self.provider.base_url}search/{quote_plus(term)}/{page}"
-        return self._get_videos_from_url(url, page, f"Search: {term}", limit)
-
-    def extract_video_page_metadata(self, video_url: str) -> dict[str, Any]:
-        """Extract metadata from video page HTML for GUI display"""
-        try:
-            # Fetch video page and extract metadata for GUI display
-            # Does NOT resolve to streaming URLs - that happens later via resolve_url()
-            headers = self.provider.get_standard_headers("metadata")
-
-            response = self.provider.session.get(video_url, headers=headers, timeout=30)
-
-            if response.status_code == 200:
-                # Extract metadata from page HTML
-                metadata = self.extract_metadata(response.text)
-
-                return {
-                    "resolved": True,
-                    "video_urls": [{
-                        "url": video_url,  # Return the same page URL (not a streaming URL!)
-                        "quality": "adaptive",
-                        "format": "page"  # Indicate this is a page URL, not a stream URL
-                    }],
-                    "title": metadata.get("title", ""),
-                    "duration": metadata.get("duration", ""),
-                    "thumbnail": "",
-                    "session": self.provider.session,  # Include authenticated session for further requests
-                }
-            return {
-                "resolved": False,
-                "video_urls": [],
-                "error": f"Could not fetch page for metadata: HTTP {response.status_code}"
-            }
-
-        except Exception as e:
-            return {
-                "resolved": False,
-                "video_urls": [],
-                "error": f"Metadata extraction failed: {str(e)}"
-            }
-
-    def extract_metadata(self, html: str) -> dict[str, Any]:
-        """Extract video metadata from xHamster HTML"""
-        metadata = {
-            "title": None,
-            "duration": None,
-            "duration_seconds": None,
-            "thumbnail": None,
-        }
-
-        try:
-            # Extract title
-            title_patterns = [
-                r'<meta property="og:title" content="([^"]+)"',
-                r'<title>([^<]+)</title>',
-                r'<h1[^>]*>([^<]+)</h1>',
-                r'"title":\s*"([^"]+)"',
-            ]
-
-            for pattern in title_patterns:
-                match = re.search(pattern, html)
-                if match:
-                    title = match.group(1).strip()
-                    # Clean up common title suffixes
-                    title = re.sub(r' - xHamster\.com$', '', title)
-                    title = re.sub(r' - Porn Videos & Adult Movies \| xHamster$', '', title)
-                    metadata["title"] = title
-                    break
-
-            # Extract duration from multiple sources
-            duration_patterns = [
-                r'"duration":\s*"?(\d+)"?',  # JSON format seconds
-                r'"duration":\s*(\d+)',
-                r'duration["\']?\s*:\s*["\']?(\d+)',
-                r'PT(\d+)S',  # ISO 8601 duration format
-                r'"contentDuration":\s*"PT(\d+)S"',
-                r'<meta property="video:duration" content="(\d+)"',
-            ]
-
-            for pattern in duration_patterns:
-                match = re.search(pattern, html, re.IGNORECASE)
-                if match:
-                    try:
-                        seconds = int(match.group(1))
-                        if 0 < seconds < 86400:  # Sanity check: less than 24 hours
-                            metadata["duration_seconds"] = seconds
-
-                            # Convert to MM:SS or HH:MM:SS format
-                            hours = seconds // 3600
-                            minutes = (seconds % 3600) // 60
-                            secs = seconds % 60
-                            if hours > 0:
-                                metadata["duration"] = f"{hours}:{minutes:02d}:{secs:02d}"
-                            else:
-                                metadata["duration"] = f"{minutes}:{secs:02d}"
-                            break
-                    except (ValueError, IndexError):
-                        continue
-
-            # Extract thumbnail
-            thumb_patterns = [
-                r'<meta property="og:image" content="([^"]+)"',
-                r'"thumbnail":\s*"([^"]+)"',
-                r'data-src="([^"]+)"[^>]*class="[^"]*thumb',
-                r'poster="([^"]+)"',
-            ]
-
-            for pattern in thumb_patterns:
-                match = re.search(pattern, html)
-                if match:
-                    thumbnail = match.group(1)
-                    # Ensure proper URL format
-                    if thumbnail.startswith('//'):
-                        thumbnail = 'https:' + thumbnail
-                    elif not thumbnail.startswith('http'):
-                        thumbnail = 'https://xhamster.com' + thumbnail
-                    metadata["thumbnail"] = thumbnail
-                    break
-
-            return metadata
-
-        except Exception as e:
-            logger.error("Error extracting metadata: %s", e)
-            return metadata
-
-    def _create_enhanced_video(self, video: dict[str, Any], category: str = "Unknown") -> dict[str, Any]:
+    def _create_enhanced_video(self, video: dict[str, Any], _category: str = "Unknown") -> dict[str, Any]:
         """Create standardized enhanced video structure from raw video data"""
         video_url = video.get("url", "").strip()
         raw_title = video.get("title", "Unknown Title").strip()
@@ -242,24 +111,16 @@ class Video:
             title = f"xHamster Video {self.provider.extract_video_id(video_url)[:8]}"
 
         # Sanitize all strings to prevent JSON serialization issues
-        clean_title = self.provider.sanitize_for_json(title)
-        clean_viewkey = re.sub(r'[^\w-]', '', self.provider.extract_video_id(video_url))
+        clean_title = sanitize_for_json(title)
         clean_thumbnail = video.get("thumbnail", "").strip()
         clean_duration = video.get("duration", "").strip()
 
         return {
             "title": clean_title,
             "duration": clean_duration,
-            "url": video_url,  # Use page URL (resolver will be called on-demand)
-            "page_url": video_url,  # Keep original page URL for reference
-            "viewkey": clean_viewkey,
+            "url": video_url,
             "thumbnail": clean_thumbnail,
-            "site": "xhamster",
-            "category": category,
-            "provider_id": self.provider.provider_id,  # Include provider ID for recording
-            "needs_resolution": True,  # Flag indicating this needs resolution for playback
-            "quality": "Unknown",  # Will be determined during resolution
-            "format": "Unknown",   # Will be determined during resolution
+            "provider_id": self.provider.provider_id,
         }
 
     def _get_videos_from_url(self, url: str, page: int, category: str, limit: int = PAGE_ENTRIES) -> list[dict[str, Any]]:
@@ -286,7 +147,7 @@ class Video:
             logger.info("Error getting xHamster videos from %s: %s", url, e)
             return []
 
-    def _get_video_list(self, url: str, page: int, limit: int = PAGE_ENTRIES) -> dict[str, Any]:
+    def _get_video_list(self, url: str, page: int, _limit: int = PAGE_ENTRIES) -> dict[str, Any]:
         """Parse video list from xHamster page with enhanced title extraction"""
         try:
             headers = self.provider.get_standard_headers("scraping")
@@ -306,6 +167,7 @@ class Video:
 
             videos = []
             seen_urls = set()  # Track URLs to avoid duplicates
+            seen_video_ids = set()  # Track video IDs to catch same video with different URLs
 
             # xHamster video patterns - updated for current structure
             video_patterns = [
@@ -396,13 +258,18 @@ class Video:
                         if not video_url.startswith("http"):
                             video_url = urljoin(self.provider.base_url, video_url)
 
-                        # Skip if we've already seen this URL
-                        if video_url in seen_urls:
+                        # Extract video ID to detect true duplicates (same video, different URL)
+                        video_id = self.provider.extract_video_id(video_url)
+
+                        # Skip if we've already seen this URL or video ID
+                        if video_url in seen_urls or video_id in seen_video_ids:
+                            logger.debug("Skipping duplicate video: %s (ID: %s)", video_url, video_id)
                             continue
                         seen_urls.add(video_url)
+                        seen_video_ids.add(video_id)
 
                         # Clean and validate title
-                        title = self.provider._clean_text(title)
+                        title = clean_text(title)
                         if not title or title.lower() in {'unknown video', 'video', 'untitled'}:
                             # Generate title from URL if needed
                             title = f"xHamster Video {self.provider.extract_video_id(video_url)[:8]}"
@@ -440,7 +307,7 @@ class Video:
                                 pass
 
                         # Sanitize data to prevent JSON issues
-                        clean_title = self.provider.sanitize_for_json(title)
+                        clean_title = sanitize_for_json(title)
                         clean_url = video_url.strip()
                         clean_thumbnail = (img_match.group(1) if img_match else "").strip()
                         clean_duration = duration.strip()
@@ -450,18 +317,25 @@ class Video:
                             "duration": clean_duration,
                             "url": clean_url,
                             "thumbnail": clean_thumbnail,
-                            "site": self.provider.name,
                         }
                         videos.append(video_data)
+                        logger.debug("Added video %d: %s - %s", len(videos), clean_title[:50], video_id)
 
                 if videos:  # If we found videos with this pattern, stop trying others
                     break
+
+            logger.info("Found %d videos after filtering (before limit)", len(videos))
+            logger.info("Unique video IDs found: %d", len(seen_video_ids))
+            if videos:
+                logger.info("Sample videos: First=%s, Last=%s",
+                            videos[0]['url'][-30:] if videos[0]['url'] else 'None',
+                            videos[-1]['url'][-30:] if videos[-1]['url'] else 'None')
 
             # Check for next page
             has_next = bool(re.search(r'(?:next|>)[\'"][^>]*>', html, re.IGNORECASE))
 
             return {
-                "videos": videos[:limit],  # Limit to requested number of videos per page
+                "videos": videos,  # Return all videos without limiting
                 "page": page,
                 "has_next_page": has_next,
                 "total_results": len(videos),
@@ -478,6 +352,7 @@ class Video:
 
     def _scrape_category_direct_optimized(self, category_url: str, limit: int) -> list[dict[str, Any]]:
         """Direct category scraping optimized for performance (no resolution)"""
+        logger.info("Directly scraping category URL: %s", category_url)
         try:
             headers = self.provider.get_standard_headers("scraping")
 

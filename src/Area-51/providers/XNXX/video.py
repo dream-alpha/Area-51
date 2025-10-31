@@ -12,10 +12,12 @@ including video discovery, extraction, and metadata processing.
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote, urljoin
+from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from debug import get_logger
+from string_utils import sanitize_for_json
 from auth_utils import get_headers
+from constants import MAX_VIDEOS
 
 logger = get_logger(__file__)
 
@@ -27,28 +29,11 @@ class Video:
         """Initialize with reference to parent provider"""
         self.provider = provider
 
-    def get_media_items(self, category: dict, page: int = 1, _limit: int = 28) -> list[dict[str, Any]]:
+    def get_media_items(self, category: dict, _page: int = 1, limit: int = MAX_VIDEOS) -> list[dict[str, Any]]:
         """Get media items for a specific category"""
-        category_url = category.get("url", "none")
-        result = self._get_video_list(category_url, page)
-        return result.get("videos", [])
+        url = category.get("url", "none")
+        logger.info("Getting media items from URL: %s, limit: %d", url, limit)
 
-    def get_latest_videos(self, page: int = 1, _limit: int = 28) -> dict[str, Any]:
-        """Get latest videos from XNXX"""
-        # XNXX latest videos are at the root, page 1 is just the base URL
-        if page == 1:
-            latest_url = self.provider.base_url
-        else:
-            latest_url = f"{self.provider.base_url}{page}"
-        return self._get_video_list(latest_url, page)
-
-    def search_videos(self, term: str, page: int = 1, _limit: int = 28) -> dict[str, Any]:
-        """Search videos"""
-        search_url = f"{self.provider.base_url}search/{quote(term)}?page={page}"
-        return self._get_video_list(search_url, page)
-
-    def _get_video_list(self, url: str, page: int) -> dict[str, Any]:
-        """Try to scrape XNXX video list"""
         try:
             headers = get_headers("browser")
 
@@ -59,19 +44,37 @@ class Video:
             soup = BeautifulSoup(html, "html.parser")
             videos = []
 
-            # Try to find video containers - XNXX uses .mozaique .thumb-block structure
-            containers = soup.select(".mozaique .thumb-block") or soup.select(".thumb-block")
+            # Try to find video containers - XNXX uses multiple possible structures
+            containers = (
+                soup.select(".mozaique .thumb-block")
+                or soup.select(".thumb-block")
+                or soup.select("div[class*='thumb']")
+                or soup.select(".video-block")
+                or soup.select("div[class*='video']")
+            )
+            logger.info("Found %d containers on XNXX page", len(containers))
+
+            # Debug: Log the actual HTML structure for troubleshooting
+            if not containers:
+                logger.warning("No video containers found. Page structure may have changed.")
+                # Log first few divs to help debug structure
+                all_divs = soup.find_all('div', limit=10)
+                for i, div in enumerate(all_divs):
+                    logger.debug("Div %d classes: %s", i, div.get('class', []))
 
             if containers:
-                for container in containers:
+                logger.info("Processing %d video containers found", len(containers))
+                for i, container in enumerate(containers):
                     try:
                         # XNXX structure: .thumb-under p a contains the title and URL
                         title_link = container.select_one(".thumb-under p a")
                         if not title_link:
+                            logger.debug("No title link found in container")
                             continue
 
                         href = title_link.get("href", "")
                         if not href:
+                            logger.debug("No href found in title link")
                             continue
 
                         if not href.startswith("http"):
@@ -80,6 +83,7 @@ class Video:
                         # Get title from title attribute or text content
                         title = title_link.get("title", "") or title_link.get_text(strip=True)
                         if not title:
+                            logger.debug("No title found for href: %s", href)
                             continue
 
                         # Get thumbnail from .thumb img with data-src attribute
@@ -103,7 +107,7 @@ class Video:
                                 views = views_text.split()[0] if views_text else "0"
 
                         # Extract video title and clean it
-                        clean_title = self.provider.sanitize_for_json(title)
+                        clean_title = sanitize_for_json(title)
 
                         # Add the video without resolving the URL
                         video_data = {
@@ -113,65 +117,29 @@ class Video:
                             "page_url": href,           # Keep original page URL for reference
                             "thumbnail": thumbnail,
                             "views": views,
-                            "site": self.provider.name,
-                            "provider_id": self.provider.provider_id,  # Include provider ID for recording
-                            "quality": "adaptive",      # Default adaptive quality - actual quality selected during resolution
-                            "format": "mp4",            # Assume mp4 as default format
-                            "needs_resolution": True,   # Mark that this URL needs resolution
-                            "category": "Unknown",
+                            "provider_id": self.provider.provider_id,
+                            "format": "mp4",
                         }
 
                         videos.append(video_data)
-                        logger.debug("Prepared video: %s", video_data)
+                        logger.debug("Prepared video %d: %s", i + 1, video_data.get('title', 'No title'))
 
                     except Exception as e:
-                        logger.debug("Error processing video container: %s", e)
+                        logger.warning("Error processing video container: %s", e, exc_info=True)
                         continue
 
                 logger.info("Found %d videos from XNXX", len(videos))
             else:
                 logger.info("No video containers found on XNXX page")
 
-            return {
-                "videos": videos,
-                "has_next_page": len(videos) >= 28,  # Assume more pages if we got a full page
-                "page": page
-            }
+            # Apply limit if specified
+            if limit and len(videos) > limit:
+                logger.info("Limiting results from %d to %d videos", len(videos), limit)
+                videos = videos[:limit]
+
+            logger.info("Returning %d videos (limit: %d)", len(videos), limit)
+            return videos
 
         except Exception as e:
             logger.info("Error getting video list from XNXX: %s", e)
-            return {"videos": [], "has_next_page": False, "page": page}
-
-    def get_video_details(self, video_url: str) -> dict[str, Any]:
-        """Get detailed information for a specific video"""
-        try:
-            headers = get_headers("browser")
-            response = self.provider.session.get(video_url, headers=headers, timeout=30)
-            response.raise_for_status()
-
-            html = response.text
-            soup = BeautifulSoup(html, "html.parser")
-
-            # Extract additional metadata if needed
-            details = {
-                "resolved_url": video_url,
-                "description": "",
-                "tags": [],
-                "upload_date": "",
-                "uploader": "",
-            }
-
-            # Try to extract description
-            desc_elem = soup.select_one(".video-description") or soup.select_one("#video-description")
-            if desc_elem:
-                details["description"] = self.provider.sanitize_for_json(desc_elem.get_text(strip=True))
-
-            # Try to extract tags
-            tag_elements = soup.select(".video-tags a") or soup.select(".tags a")
-            details["tags"] = [self.provider.sanitize_for_json(tag.get_text(strip=True)) for tag in tag_elements[:10]]
-
-            return details
-
-        except Exception as e:
-            logger.debug("Error getting video details from %s: %s", video_url, e)
-            return {"resolved_url": video_url}
+            return []

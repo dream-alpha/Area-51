@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urljoin
 from debug import get_logger
+from string_utils import sanitize_for_json
 from auth_utils import get_headers
 
 logger = get_logger(__file__)
@@ -46,7 +47,7 @@ class Category:
 
             for label, url, nbvids in category_patterns[:100]:  # Limit to reasonable number
                 # Clean up the category name and URL
-                category_name = self.provider.sanitize_for_json(label)
+                category_name = sanitize_for_json(label)
                 category_name = category_name.replace("\\/", "/")
 
                 # Clean up the URL - remove escape characters
@@ -72,7 +73,7 @@ class Category:
                     )
 
                     category_data = {
-                        "name": self.provider.sanitize_for_json(category_name),
+                        "name": sanitize_for_json(category_name),
                         "url": full_url,
                         "thumbnail": "",  # XNXX doesn't provide category thumbnails
                         "video_count": nbvids,

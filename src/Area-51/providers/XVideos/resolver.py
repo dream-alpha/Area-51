@@ -27,71 +27,60 @@ logger = get_logger(__file__)
 class Resolver(BaseResolver):
     """XVideos URL resolver"""
 
-    def __init__(self):
-        super().__init__()
-        self.name = "xvideos"
+    def __init__(self, args: dict):
+        super().__init__(args)
         self.auth_tokens = AuthTokens()
 
-    def resolve_url(self, args: dict) -> dict[str, Any] | None:
+    def resolve_url(self) -> dict[str, Any] | None:
         """
         Resolve XVideos video URL to streaming sources
-
-        Args:
-            args (dict): Input arguments containing the URL
 
         Returns:
             Dictionary with resolved status and sources list (no metadata)
         """
-        url = args.get("url", "")
-        quality = args.get("quality", "best")
-        av1 = args.get("av1", False)  # Whether to include AV1 codecs (None=use global setting, True=force enable, False=force disable)
-        logger.info("Resolving XVideos URL: %s", url)
+        logger.info("Resolving XVideos URL: %s", self.url)
 
         try:
             # Use centralized authentication with fallback methods
-            html = self.auth_tokens.fetch_with_fallback(url, "https://www.xvideos.com")
+            html = self.auth_tokens.fetch_with_fallback(self.url, "https://www.xvideos.com")
 
             if not html:
                 logger.error("Failed to fetch XVideos page content")
-                return {"resolved": False, "error": "Failed to fetch page content"}
+                return None
 
             # Extract video sources from HTML
             sources = self._extract_sources(html)
 
             if not sources:
-                logger.warning("No video sources found")
-                return {"resolved": False, "error": "No video sources found"}
+                logger.error("No video sources found")
+                return None
 
             # Select the optimal quality URL from available sources using quality and codec preferences
-            best_source = select_best_source(sources, quality, codec_aware=True, av1=av1)
-            resolved_url = best_source["url"] if best_source else url
+            best_source = select_best_source(sources, self.quality, codec_aware=True, av1=self.av1)
+            resolved_url = best_source["url"] if best_source else self.url
 
             logger.info("Selected quality: %s (requested: %s) - %s",
                         best_source.get("quality", "Unknown") if best_source else "None",
-                        quality,
+                        self.quality,
                         resolved_url[:100] + "..." if len(resolved_url) > 100 else resolved_url)
 
             # Determine recorder type based on URL characteristics
-            recorder_id = self.determine_recorder_type(resolved_url)
+            recorder_id = self.determine_recorder_id(resolved_url)
 
             # Generate FFmpeg headers for HLS recorders with proper cookie handling
-            auth_tokens_dict = self.auth_tokens.to_dict()
             ffmpeg_headers = self.auth_tokens.get_ffmpeg_headers()
 
-            return {
+            self.resolve_result.update({
                 "resolved_url": resolved_url,
-                "auth_tokens": auth_tokens_dict,
                 "ffmpeg_headers": ffmpeg_headers,  # Include FFmpeg headers for HLS recorders
                 "session": self.auth_tokens.session,  # Include authenticated session for reuse
-                "resolved": True,
-                "resolver": self.name,
                 "recorder_id": recorder_id,
-                "quality": quality,  # Pass through the originally requested quality
-            }
+            })
+            return self.resolve_result
 
         except Exception as e:
             logger.error("Error resolving XVideos URL: %s", e)
-            return {"resolved": False, "error": str(e)}
+            return None
 
     def _extract_sources(self, html: str) -> list[dict[str, Any]]:
         """Extract video sources from XVideos HTML"""

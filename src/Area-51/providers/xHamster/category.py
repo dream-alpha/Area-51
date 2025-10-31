@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from debug import get_logger
+from string_utils import sanitize_for_json
 from constants import PAGE_ENTRIES
 
 logger = get_logger(__file__)
@@ -47,6 +48,8 @@ class Category:
 
             logger.info("Scraping category groups from: %s", categories_url)
             all_categories = []  # Start with empty list to populate from actual page
+            seen_urls = set()  # Track URLs to avoid duplicates across groups
+            seen_names = set()  # Also track category names to catch same category with different URLs
 
             # Add main navigation categories first (these are always available)
             main_navigation_categories = [
@@ -55,7 +58,13 @@ class Category:
                 {"name": "Top Rated", "url": f"{self.provider.base_url}best"},
                 {"name": "Newest", "url": f"{self.provider.base_url}newest"},
             ]
-            all_categories.extend(main_navigation_categories)
+            for cat in main_navigation_categories:
+                all_categories.append(cat)
+                normalized_url = cat["url"].rstrip('/').lower()
+                # Normalize category name: lowercase, remove extra spaces, strip
+                normalized_name = ' '.join(cat["name"].lower().split())
+                seen_urls.add(normalized_url)
+                seen_names.add(normalized_name)
 
             # Look for category groups using the H2 headers structure we discovered
             category_groups = soup.select('h2')
@@ -95,11 +104,26 @@ class Category:
                         if "/photos/" in href or "photo" in link_text.lower():
                             continue
 
+                        # Normalize URL and name for duplicate checking
+                        normalized_url = href.rstrip('/').lower()
+                        # Normalize category name: lowercase, remove extra spaces, strip
+                        normalized_name = ' '.join(link_text.lower().split())
+
+                        # Skip if we've already added this URL or category name
+                        if normalized_url in seen_urls:
+                            logger.debug("Skipping duplicate URL: %s (from group: %s)", href, group_name)
+                            continue
+                        if normalized_name in seen_names:
+                            logger.debug("Skipping duplicate category name: '%s' (from group: %s)", link_text, group_name)
+                            continue
+
                         group_categories.append({
-                            "name": self.provider.sanitize_for_json(link_text),
+                            "name": sanitize_for_json(link_text),
                             "url": href,
                             "group": group_name
                         })
+                        seen_urls.add(normalized_url)
+                        seen_names.add(normalized_name)
 
                 # Add the best categories from this group
                 all_categories.extend(group_categories)
@@ -111,7 +135,7 @@ class Category:
                 popular_links = soup.select('a[href*="/categories/"]')
                 max_categories = 2 * PAGE_ENTRIES  # Define the limit here too
 
-                seen_urls = {cat['url'] for cat in all_categories}
+                # seen_urls already maintained above, no need to rebuild it
 
                 for link in popular_links:
                     if len(all_categories) >= max_categories:  # Stop when we reach the limit
@@ -126,18 +150,26 @@ class Category:
                     if not href.startswith("http"):
                         href = urljoin(self.provider.base_url, href)
 
-                    if href in seen_urls:
+                    # Normalize URL and name for duplicate checking
+                    normalized_url = href.rstrip('/').lower()
+                    # Normalize category name: lowercase, remove extra spaces, strip
+                    normalized_name = ' '.join(link_text.lower().split())
+
+                    if normalized_url in seen_urls:
+                        continue
+                    if normalized_name in seen_names:
                         continue
 
                     if "/photos/" in href or "photo" in link_text.lower():
                         continue
 
                     all_categories.append({
-                        "name": self.provider.sanitize_for_json(link_text),
+                        "name": sanitize_for_json(link_text),
                         "url": href,
                         "group": "Popular"
                     })
-                    seen_urls.add(href)
+                    seen_urls.add(normalized_url)
+                    seen_names.add(normalized_name)
 
             logger.info("Found %d total categories from groups", len(all_categories))
 

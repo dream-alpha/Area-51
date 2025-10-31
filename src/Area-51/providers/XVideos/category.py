@@ -15,6 +15,7 @@ import json
 import re
 from urllib.parse import urljoin
 from auth_utils import get_headers
+from string_utils import sanitize_for_json
 from debug import get_logger
 from constants import MAX_CATEGORIES
 
@@ -85,7 +86,7 @@ class CategoryManager:
                     for href, name in matches:
                         if href and name and len(name.strip()) > 1:
                             # Clean up the name and URL
-                            clean_name = self.base_provider.sanitize_for_json(name)
+                            clean_name = sanitize_for_json(name)
                             if clean_name:
                                 full_url = urljoin(self.base_url, href)
                                 xvideos_categories.append({

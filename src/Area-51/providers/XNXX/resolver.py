@@ -29,29 +29,22 @@ logger = get_logger(__file__)
 class Resolver(BaseResolver):
     """XNXX URL resolver"""
 
-    def __init__(self):
-        super().__init__()
-        self.name = "xnxx"
+    def __init__(self, args: dict):
+        super().__init__(args)
         self.auth_tokens = AuthTokens()
 
-    def resolve_url(self, args: dict) -> dict[str, Any] | None:
+    def resolve_url(self) -> dict[str, Any] | None:
         """
         Resolve XNXX URL to streaming URLs using centralized auth utilities
 
-        Args:
-            args (dict): Input arguments containing the URL
+        Returns:
+            Dictionary with resolved status and streaming information
         """
         try:
-            url = args.get("url", "")
-            quality = args.get("quality", "best")
-            av1 = args.get("av1", None)
-            logger.info("Resolving XNXX URL: %s", url)
-            logger.info("=== XNXX RESOLVER QUALITY DEBUG ===")
-            logger.info("Received quality parameter: '%s'", quality)
-            logger.info("Args: %s", {k: v for k, v in args.items() if k != 'socketserver'})
+            logger.info("Resolving XNXX URL: %s", self.url)
 
             # Use centralized authentication with fallback methods
-            html = self.auth_tokens.fetch_with_fallback(url, "https://www.xnxx.com")
+            html = self.auth_tokens.fetch_with_fallback(self.url, "https://www.xnxx.com")
 
             if not html:
                 logger.error("Failed to fetch XNXX page content")
@@ -131,7 +124,7 @@ class Resolver(BaseResolver):
                             if src.startswith("//"):
                                 src = "https:" + src
                             else:
-                                src = urljoin(url, src)
+                                src = urljoin(self.url, src)
 
                         # Extract metadata from URL
                         metadata = extract_metadata_from_url(src)
@@ -191,39 +184,35 @@ class Resolver(BaseResolver):
 
                 # Select the optimal quality URL from available sources using quality preference
                 logger.info("=== XNXX RESOLVER DEBUG ===")
-                logger.info("About to call select_best_source with quality='%s'", quality)
+                logger.info("About to call select_best_source with quality='%s'", self.quality)
                 logger.info("Available sources for selection: %s",
                             [f"{s['quality']}/{s['format']}" for s in unique_sources])
-                best_source = select_best_source(unique_sources, quality, codec_aware=True, av1=av1)
-                resolved_url = best_source["url"] if best_source else url
+                best_source = select_best_source(unique_sources, self.quality, codec_aware=True, av1=self.av1)
+                resolved_url = best_source["url"] if best_source else self.url
 
                 logger.info("Selected quality: %s (requested: %s) - %s",
                             best_source.get("quality", "Unknown") if best_source else "None",
-                            quality,
+                            self.quality,
                             resolved_url[:100] + "..." if len(resolved_url) > 100 else resolved_url)
 
                 # Determine recorder type based on URL characteristics
-                recorder_id = self.determine_recorder_type(resolved_url)
+                recorder_id = self.determine_recorder_id(resolved_url)
 
                 # Create FFmpeg headers from auth tokens for M4S recorder
-                auth_tokens_dict = self.auth_tokens.to_dict()
                 ffmpeg_headers = self.auth_tokens.get_ffmpeg_headers()
 
-                return {
+                self.resolve_result.update({
                     "resolved_url": resolved_url,
-                    "auth_tokens": auth_tokens_dict,
                     "session": self.auth_tokens.session,  # Include authenticated session for reuse
                     "ffmpeg_headers": ffmpeg_headers,  # Include FFmpeg headers for M4S recorder
-                    "resolved": True,
-                    "resolver": self.name,
                     "recorder_id": recorder_id,
-                    "quality": quality,  # Pass through the originally requested quality
-                }
+                })
+                return self.resolve_result
 
             # No sources found
-            logger.warning("No video sources found in XNXX page")
+            logger.error("No video sources found in XNXX page")
             return None
 
         except Exception as e:
-            logger.info("XNXX resolution error: %s", e)
+            logger.error("XNXX resolution error: %s", e)
             return None
